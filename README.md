@@ -121,7 +121,7 @@ Pastikan kamu sudah menginstal perkakas berikut pada sistem operasi komputermu:
 
 ## Akun Login Admin Default
 Untuk masuk ke Dashboard Admin, gunakan kredensial berikut:
-- **Email:** `admin@ojanbusuk.com`
+- **Email:** `admin@CampRent.com`
 - **Password:** `admin123`
 
 Sesi portal login dapat diakses melalui link kecil **Admin** di sebelah kanan atas Navbar, atau langsung menuju route `/login`.
