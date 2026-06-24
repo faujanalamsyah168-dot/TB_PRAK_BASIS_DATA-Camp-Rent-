@@ -1,0 +1,718 @@
+import React, { useEffect, useRef, useState } from 'react';
+import Chart from 'chart.js/auto';
+import { api } from '../../api/client';
+import { Package, PieChart, Activity } from 'lucide-react';
+
+
+export default function Dashboard() {
+  // ==================== STATE MANAGEMENT ====================
+  
+  const [stats, setStats] = useState(null);
+  const [chartData, setChartData] = useState({
+    dayLabels: [],
+    transactions: [],
+    revenue: [],
+    paidRevenue: [],
+    statusLabels: [],
+    statusValues: [],
+    typeLabels: [],
+    typeValues: [],
+    topItemsLabels: [],
+    topItemsValues: [],
+    topPackagesLabels: [],
+    topPackagesValues: []
+  });
+  
+  const [loading, setLoading] = useState(true);
+
+  // ==================== REFS UNTUK CHART ====================
+  
+  const revenueChartRef = useRef(null);
+  const salesChartRef = useRef(null);
+  const packageChartRef = useRef(null);
+  const productChartRef = useRef(null);
+  const charts = useRef([]);
+
+  // ==================== FUNGSI PEMBANTU ====================
+  
+  const getLast7Days = () => {
+    const today = new Date();
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(today);
+      date.setDate(today.getDate() - (6 - index));
+      return date;
+    });
+  };
+
+  const normalizeDate = (date) => date.toISOString().slice(0, 10);
+
+  const formatRupiah = (num) => {
+    return new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(num);
+  };
+
+  // ==================== FETCH DATA DARI API ====================
+  
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      try {
+        // 🔥 AMBIL SEMUA DATA YANG DIPERLUKAN
+        // Ringkasan dashboard (termasuk total_boxing) ambil langsung dari backend agar sinkron.
+        const [statsData, bookingsData, paymentsData, equipmentData, packagesData] = await Promise.all([
+          api.get('/dashboard/stats'),
+          api.get('/bookings'),
+          api.get('/payments'),
+          api.get('/equipment'),
+          api.get('/packages')
+        ]);
+
+
+        // 🔥 PASTIKAN bookingsData ADALAH ARRAY
+        const bookings = Array.isArray(bookingsData) ? bookingsData : [];
+        const payments = Array.isArray(paymentsData) ? paymentsData : [];
+        const equipment = Array.isArray(equipmentData) ? equipmentData : [];
+        const packages = Array.isArray(packagesData) ? packagesData : [];
+
+        // Buat map status pembayaran per booking_id
+        const paymentStatusMap = {};
+        const paymentAmountMap = {};
+        
+        payments.forEach(payment => {
+          const bookingId = Number(payment.booking_id);
+          const status = String(payment.status || '').trim().toLowerCase();
+          paymentStatusMap[bookingId] = status;
+          paymentAmountMap[bookingId] = Number(payment.amount || 0);
+        });
+
+        // ========== RINGKASAN: source of truth dari backend ==========
+        const backendStats = statsData && typeof statsData === 'object' ? statsData : {};
+
+        // Catatan: untuk tujuan sinkron, metrik ringkasan card langsung dari backend.
+        setStats({
+          total_paid_revenue: Number(backendStats.total_revenue ?? 0) || 0,
+          total_boxing: Number(backendStats.total_boxing ?? 0) || 0,
+          total_bookings: Number(backendStats.total_bookings ?? 0) || 0,
+          // Backend stats belum mengirim avg_booking_value. Jadi pakai perhitungan dari charts.
+          avg_booking_value: 0,
+          total_equipment: Number(backendStats.total_equipment ?? 0) || 0,
+          total_packages: Number(backendStats.total_packages ?? 0) || 0,
+          bookings_approved: Number(backendStats.bookings_approved ?? 0) || 0,
+          bookings_pending: Number(backendStats.bookings_pending ?? 0) || 0,
+          bookings_returned: Number(backendStats.bookings_returned ?? 0) || 0,
+          // Backend stats belum mengirim bookings_rented & bookings_cancelled.
+          bookings_rented: 0,
+          bookings_cancelled: 0
+        });
+
+
+
+
+        // ========== INISIALISASI DATA UNTUK CHART ==========
+        
+        const last7Days = getLast7Days();
+        
+        const dayLabels = last7Days.map((day) =>
+          day.toLocaleDateString('id-ID', { weekday: 'short', day: 'numeric', month: 'short' })
+        );
+        
+        const transactions = Array(7).fill(0);
+        const revenue = Array(7).fill(0);
+        const paidRevenue = Array(7).fill(0);
+        
+        const statusCounts = {
+          pending: 0,
+          approved: 0,
+          rented: 0,
+          returned: 0,
+          cancelled: 0
+        };
+
+        const typeCounts = { equipment: 0, package: 0 };
+        const itemCounts = new Map();
+        const packageCounts = new Map();
+
+        // ========== PROSES DATA BOOKING ==========
+        
+        bookings.forEach((booking) => {
+          // Status booking
+          const statusKey = booking.status;
+          if (statusCounts[statusKey] !== undefined) {
+            statusCounts[statusKey] += 1;
+          }
+
+          // Tipe booking
+          const typeKey = booking.booking_type;
+          if (typeCounts[typeKey] !== undefined) {
+            typeCounts[typeKey] += 1;
+          }
+
+          // Transaksi per hari (7 hari terakhir)
+          const createdAt = new Date(booking.created_at);
+          const dayIndex = last7Days.findIndex((day) => normalizeDate(day) === normalizeDate(createdAt));
+          if (dayIndex >= 0) {
+            transactions[dayIndex] += 1;
+            const bookingPrice = Number(booking.total_price || 0);
+            revenue[dayIndex] += bookingPrice;
+            
+            // Hanya tambahkan ke paidRevenue jika booking sudah lunas
+            const isPaid = paymentStatusMap[booking.id] === 'paid';
+            if (isPaid) {
+              paidRevenue[dayIndex] += bookingPrice;
+            }
+          }
+
+          // Item dan paket yang paling sering disewa
+          if (Array.isArray(booking.items)) {
+            booking.items.forEach((item) => {
+              const itemName = item.equipment_name || item.package_name || 'Unknown';
+              const qty = Number(item.quantity || 0);
+              
+              if (booking.booking_type === 'equipment') {
+                itemCounts.set(itemName, (itemCounts.get(itemName) || 0) + qty);
+              }
+              
+              if (booking.booking_type === 'package') {
+                const packageName = item.package_name || 'Paket Unknown';
+                packageCounts.set(packageName, (packageCounts.get(packageName) || 0) + qty);
+              }
+            });
+          }
+        });
+
+        const topItems = Array.from(itemCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+
+        const topPackages = Array.from(packageCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5);
+
+        setChartData({
+          dayLabels,
+          transactions,
+          revenue,
+          paidRevenue,
+          statusLabels: Object.keys(statusCounts).map((key) => {
+            const statusMap = {
+              pending: 'Menunggu Konfirmasi',
+              approved: 'Disetujui',
+              rented: 'Sedang Disewa',
+              returned: 'Selesai / Dikembalikan',
+              cancelled: 'Dibatalkan'
+            };
+            return statusMap[key] || key;
+          }),
+          statusValues: Object.values(statusCounts),
+          typeLabels: Object.keys(typeCounts).map((key) => {
+            const typeMap = {
+              equipment: 'Peralatan',
+              package: 'Paket'
+            };
+            return typeMap[key] || key;
+          }),
+          typeValues: Object.values(typeCounts),
+          topItemsLabels: topItems.map(([name]) => name),
+          topItemsValues: topItems.map(([, value]) => value),
+          topPackagesLabels: topPackages.map(([name]) => name),
+          topPackagesValues: topPackages.map(([, value]) => value)
+        });
+      } catch (err) {
+        console.error('Gagal memuat data dashboard:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchDashboardData();
+  }, []);
+
+  // ==================== RENDER CHART ====================
+  
+  useEffect(() => {
+    if (!chartData.dayLabels.length || loading) return;
+
+    charts.current.forEach((chart) => chart.destroy());
+    charts.current = [];
+
+    // ===== CHART 1: GRAFIK PENDAPATAN (LINE CHART) =====
+    if (revenueChartRef.current) {
+      charts.current.push(
+        new Chart(revenueChartRef.current.getContext('2d'), {
+          type: 'line',
+          data: {
+            labels: chartData.dayLabels,
+            datasets: [
+              {
+                label: '✅ Pendapatan (Lunas)',
+                data: chartData.paidRevenue,
+                borderColor: '#22C55E',
+                backgroundColor: 'rgba(34, 197, 94, 0.15)',
+                fill: true,
+                tension: 0.4,
+                pointBackgroundColor: '#22C55E',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 5,
+                pointHoverRadius: 8
+              },
+              {
+                label: '📊 Total Booking',
+                data: chartData.revenue,
+                borderColor: '#E2725B',
+                backgroundColor: 'rgba(226, 114, 91, 0.05)',
+                fill: false,
+                tension: 0.4,
+                borderDash: [5, 5],
+                pointBackgroundColor: '#E2725B',
+                pointBorderColor: '#fff',
+                pointBorderWidth: 2,
+                pointRadius: 3,
+                pointHoverRadius: 6
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'top',
+                labels: {
+                  color: '#94a3b8',
+                  boxWidth: 12,
+                  padding: 12,
+                  font: { size: 10 }
+                }
+              },
+              tooltip: {
+                callbacks: {
+                  label: function(context) {
+                    if (context.datasetIndex === 0) {
+                      return 'Lunas: Rp ' + context.parsed.y.toLocaleString('id-ID');
+                    } else {
+                      return 'Total: Rp ' + context.parsed.y.toLocaleString('id-ID');
+                    }
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { display: false },
+                ticks: { color: '#94a3b8' }
+              },
+              y: {
+                grid: { color: 'rgba(148, 163, 184, 0.1)' },
+                ticks: { 
+                  color: '#94a3b8',
+                  callback: function(value) {
+                    return 'Rp ' + value.toLocaleString('id-ID');
+                  }
+                },
+                beginAtZero: true
+              }
+            }
+          }
+        })
+      );
+    }
+
+    // ===== CHART 2: GRAFIK TRANSAKSI (BAR CHART) =====
+    if (salesChartRef.current) {
+      charts.current.push(
+        new Chart(salesChartRef.current.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: chartData.dayLabels,
+            datasets: [
+              {
+                label: 'Transaksi',
+                data: chartData.transactions,
+                backgroundColor: '#4F46E5',
+                borderRadius: 4,
+                maxBarThickness: 30
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: function(context) {
+                    return context.parsed.y + ' transaksi';
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { display: false },
+                ticks: { color: '#94a3b8' }
+              },
+              y: {
+                grid: { color: 'rgba(148, 163, 184, 0.1)' },
+                ticks: { 
+                  color: '#94a3b8',
+                  stepSize: 1
+                }
+              }
+            }
+          }
+        })
+      );
+    }
+
+    // ===== CHART 3: DISTRIBUSI PAKET (DOUGHNUT CHART) =====
+    if (packageChartRef.current && chartData.topPackagesLabels && chartData.topPackagesLabels.length > 0) {
+      const colors = ['#E2725B', '#4F46E5', '#22C55E', '#F97316', '#38BDF8'];
+      
+      charts.current.push(
+        new Chart(packageChartRef.current.getContext('2d'), {
+          type: 'doughnut',
+          data: {
+            labels: chartData.topPackagesLabels,
+            datasets: [
+              {
+                data: chartData.topPackagesValues,
+                backgroundColor: colors.slice(0, chartData.topPackagesLabels.length),
+                borderWidth: 0
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: 'bottom',
+                labels: {
+                  color: '#94a3b8',
+                  boxWidth: 10,
+                  padding: 16
+                }
+              }
+            }
+          }
+        })
+      );
+    }
+
+    // ===== CHART 4: ITEM TERLARIS (BAR CHART) =====
+    if (productChartRef.current && chartData.topItemsLabels.length > 0) {
+      charts.current.push(
+        new Chart(productChartRef.current.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: chartData.topItemsLabels,
+            datasets: [
+              {
+                label: 'Unit Disewa',
+                data: chartData.topItemsValues,
+                backgroundColor: '#22C55E',
+                borderRadius: 6,
+                maxBarThickness: 35
+              }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: function(context) {
+                    return context.parsed.y + ' unit disewa';
+                  }
+                }
+              }
+            },
+            scales: {
+              x: {
+                grid: { display: false },
+                ticks: { 
+                  color: '#94a3b8',
+                  font: { size: 9 },
+                  maxRotation: 30,
+                  minRotation: 0
+                }
+              },
+              y: {
+                grid: { color: 'rgba(148, 163, 184, 0.1)' },
+                ticks: { 
+                  color: '#94a3b8',
+                  stepSize: 1,
+                  font: { size: 10 }
+                },
+                beginAtZero: true
+              }
+            }
+          }
+        })
+      );
+    }
+
+    return () => charts.current.forEach((chart) => chart.destroy());
+  }, [chartData, loading]);
+
+  // ==================== HITUNG STATISTIK (untuk chart saja) ====================
+  
+  const totalTransactions = chartData.transactions.reduce((a, b) => a + b, 0);
+  const avgTransactions = chartData.transactions.length > 0 
+    ? Math.round(chartData.transactions.reduce((a, b) => a + b, 0) / chartData.transactions.length) 
+    : 0;
+  const maxTransactions = chartData.transactions.length > 0 ? Math.max(...chartData.transactions) : 0;
+  const todayTransactions = chartData.transactions[chartData.transactions.length - 1] || 0;
+  const totalPaidRevenueChart = chartData.paidRevenue.reduce((a, b) => a + b, 0);
+
+
+  // ==================== RENDER LOADING ====================
+  
+  if (loading) {
+    return (
+      <div className="flex h-60 items-center justify-center">
+        <div className="h-10 w-10 animate-spin rounded-full border-4 border-[#E2725B] border-t-transparent"></div>
+      </div>
+    );
+  }
+
+  // ==================== KONFIGURASI WARNA STATUS ====================
+  
+  const statusColors = {
+    'Menunggu Konfirmasi': '#F59E0B',
+    'Disetujui': '#3B82F6',
+    'Sedang Disewa': '#8B5CF6',
+    'Selesai / Dikembalikan': '#10B981',
+    'Dibatalkan': '#EF4444'
+  };
+
+  const colorArray = Object.values(statusColors);
+
+  // ==================== RENDER UTAMA ====================
+  
+  return (
+    <div className="min-h-screen bg-[#0f1419] p-4 md:p-6">
+      <div className="max-w-7xl mx-auto space-y-4">
+        
+        {/* ===== BANNER SELAMAT DATANG ===== */}
+        <div className="rounded-2xl bg-gradient-to-r from-[#1E232A] to-[#13171B] border border-slate-800 p-4 md:p-5 flex flex-col md:flex-row justify-between items-center gap-3 shadow-xl">
+          <div className="space-y-0.5">
+            <h1 className="text-xl md:text-2xl font-black uppercase tracking-wide text-white">Selamat Datang di Dashboard Admin</h1>
+            <p className="text-xs text-slate-400">Kelola data alat, paket, booking, pembayaran, dan ulasan customer.</p>
+          </div>
+          <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-widest bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 whitespace-nowrap">
+            {new Date().toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          </div>
+        </div>
+
+        {/* ===== RINGKASAN STATISTIK - BARIS 1 ===== */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Pendapatan</p>
+            <h3 className="mt-1 text-2xl font-black text-[#22C55E]">{formatRupiah(stats?.total_paid_revenue || 0)}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Total pembayaran berstatus <span className="text-green-400 font-medium">paid</span></p>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Total Boxing (Paid)</p>
+            <h3 className="mt-1 text-2xl font-black text-white">{stats?.total_boxing?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Jumlah pembayaran disetujui (paid)</p>
+          </div>
+
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Total Paket</p>
+            <h3 className="mt-1 text-2xl font-black text-white">{stats?.total_packages?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Jumlah paket di database</p>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Booking Disetujui</p>
+            <h3 className="mt-1 text-2xl font-black text-blue-400">{stats?.bookings_approved?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Booking yang telah disetujui</p>
+          </div>
+        </div>
+
+        {/* ===== RINGKASAN STATISTIK - BARIS 2 ===== */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Rata-rata Booking</p>
+            <h3 className="mt-1 text-2xl font-black text-white">{formatRupiah(stats?.avg_booking_value || 0)}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Nilai rata-rata per booking</p>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Total Alat</p>
+            <h3 className="mt-1 text-2xl font-black text-white">{stats?.total_equipment?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Jumlah alat di database</p>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Menunggu</p>
+            <h3 className="mt-1 text-2xl font-black text-amber-400">{stats?.bookings_pending?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Booking belum diproses</p>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-2xl p-4 border border-slate-800 shadow-xl shadow-slate-950/20">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500">Selesai</p>
+            <h3 className="mt-1 text-2xl font-black text-emerald-400">{stats?.bookings_returned?.toLocaleString('id-ID') || 0}</h3>
+            <p className="mt-0.5 text-[10px] text-slate-400">Booking selesai & dikembalikan</p>
+          </div>
+        </div>
+
+        {/* ===== GRAFIK UTAMA DAN DISTRIBUSI ===== */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 bg-[#1a1f26] rounded-xl p-4 border border-slate-800">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-base font-semibold text-white">Grafik Pendapatan</h2>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400">7 Hari Terakhir</span>
+                <span className="text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">
+                  Lunas: {formatRupiah(totalPaidRevenueChart)}
+                </span>
+
+              </div>
+            </div>
+            <div className="h-[280px]">
+              <canvas ref={revenueChartRef} />
+            </div>
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-xl p-4 border border-slate-800">
+            <h2 className="text-base font-semibold text-white mb-3">Distribusi Pelanggan</h2>
+            <div className="space-y-2">
+              {chartData.statusLabels.slice(0, 5).map((label, index) => {
+                const color = statusColors[label] || colorArray[index % colorArray.length];
+                const value = chartData.statusValues[index] || 0;
+                const total = chartData.statusValues.reduce((a, b) => a + b, 0) || 1;
+                const percentage = Math.round((value / total) * 100);
+                return (
+                  <div key={index}>
+                    <div className="flex justify-between text-[11px] text-slate-400 mb-0.5">
+                      <span>{label}</span>
+                      <span>{percentage}%</span>
+                    </div>
+                    <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full rounded-full transition-all duration-500"
+                        style={{ 
+                          width: `${Math.min(percentage, 100)}%`,
+                          backgroundColor: color
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 pt-3 border-t border-slate-800">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-slate-400">Total Booking</span>
+                <span className="font-bold text-white">{chartData.statusValues.reduce((a, b) => a + b, 0)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ===== BAGIAN BAWAH: 3 KOLOM ===== */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="bg-[#1a1f26] rounded-xl p-4 border border-slate-800">
+            <h2 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
+              <Package className="h-4 w-4 text-[#E2725B]" />
+              Item Terlaris
+            </h2>
+            <div className="space-y-2">
+              {chartData.topItemsLabels.length > 0 ? (
+                chartData.topItemsLabels.map((item, index) => (
+                  <div key={index} className="flex items-center justify-between py-1.5 border-b border-slate-800 last:border-0">
+                    <span className="text-sm text-slate-300 truncate max-w-[70%]">{item}</span>
+                    <span className="text-sm font-semibold text-white">{chartData.topItemsValues[index]} unit</span>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center text-slate-400 py-4">
+                  <p className="text-sm">Belum ada data item</p>
+                </div>
+              )}
+            </div>
+            {chartData.topItemsLabels.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-slate-800">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-400">Total Item Terjual</span>
+                  <span className="font-bold text-white">
+                    {chartData.topItemsValues.reduce((a, b) => a + b, 0)} unit
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-xl p-4 border border-slate-800">
+            <h2 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
+              <PieChart className="h-4 w-4 text-blue-500" />
+              Distribusi Paket
+            </h2>
+            {chartData.topPackagesLabels && chartData.topPackagesLabels.length > 0 ? (
+              <>
+                <div className="h-[160px]">
+                  <canvas ref={packageChartRef} />
+                </div>
+                <div className="mt-3 space-y-1">
+                  {chartData.topPackagesLabels.map((pkg, index) => (
+                    <div key={index} className="flex items-center justify-between text-sm">
+                      <span className="text-slate-400 truncate max-w-[70%]">{pkg}</span>
+                      <span className="font-semibold text-white">{chartData.topPackagesValues[index]} unit</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-[160px]">
+                <p className="text-slate-400 text-sm">Belum ada data paket</p>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-[#1a1f26] rounded-xl p-4 border border-slate-800">
+            <h2 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
+              <Activity className="h-4 w-4 text-green-500" />
+              Statistik Transaksi
+            </h2>
+            
+            <div className="grid grid-cols-2 gap-1.5 mb-3">
+              <div className="bg-slate-800/30 rounded-lg p-2 text-center">
+                <p className="text-[9px] text-slate-400">Total</p>
+                <p className="text-lg font-bold text-white">{totalTransactions}</p>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-2 text-center">
+                <p className="text-[9px] text-slate-400">Rata-rata</p>
+                <p className="text-lg font-bold text-white">{avgTransactions}</p>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-2 text-center">
+                <p className="text-[9px] text-slate-400">Tertinggi</p>
+                <p className="text-lg font-bold text-white">{maxTransactions}</p>
+              </div>
+              <div className="bg-slate-800/30 rounded-lg p-2 text-center">
+                <p className="text-[9px] text-slate-400">Hari Ini</p>
+                <p className="text-lg font-bold text-white">{todayTransactions}</p>
+              </div>
+            </div>
+            
+            <div className="w-full">
+              <div className="h-[130px] -ml-4 -mr-4">
+                <canvas ref={productChartRef} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

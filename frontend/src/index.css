@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/*
+  NOTE:
+  Blok @theme pada Tailwind v4 hanya dikenali jika toolchain mendukungnya.
+  Jika muncul error "unknown at rule", nonaktifkan @theme dan pindahkan
+  animasi ke CSS standar.
+*/
+
+/* Custom keyframes (CSS standar) */
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes zoomIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+
+/* Custom properties for background aesthetics */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  background-color: #0f172a; /* Slate 900 */
+}
+
+/* Custom scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #13171B;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3B593F;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #E2725B;
+}
+
+/* Custom glassmorphism helpers */
+.glass-panel {
+  background: rgba(30, 35, 42, 0.45);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
